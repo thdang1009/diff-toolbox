@@ -2,6 +2,9 @@ import { Injectable } from '@angular/core';
 // @ts-ignore
 import DiffMatchPatch from 'diff-match-patch';
 
+export type DiffChangeCategory = 'whitespace' | 'case' | 'punctuation' | 'word-replacement' | 'structural';
+export type DiffMode = 'strict' | 'smart';
+
 export interface DiffResult {
   type: 'equal' | 'insert' | 'delete';
   text: string;
@@ -13,11 +16,17 @@ export interface LineDiff {
   oldText?: string;
   newText?: string;
   wordDiffs?: DiffResult[];
+  oldWordDiffs?: DiffResult[];
+  newWordDiffs?: DiffResult[];
+  changeCategory?: DiffChangeCategory;
 }
 
 export interface DiffOptions {
   ignoreWhitespace?: boolean;
   ignoreCase?: boolean;
+  ignorePunctuation?: boolean;
+  normalizeInput?: boolean;
+  diffMode?: DiffMode;
   contextLines?: number;
 }
 
@@ -28,165 +37,197 @@ export class DiffService {
   private dmp: any;
 
   constructor() {
-    // diff-match-patch exports a constructor function directly
     this.dmp = new DiffMatchPatch();
-    // Optimize for better semantic cleanup
     this.dmp.Diff_EditCost = 4;
   }
 
-  /**
-   * Compute character-level diff between two texts
-   * @param text1 Original text
-   * @param text2 Modified text
-   * @param options Diff options
-   * @returns Array of diff results
-   */
-  computeCharDiff(text1: string, text2: string, options: DiffOptions = {}): DiffResult[] {
-    let processedText1 = text1;
-    let processedText2 = text2;
-
-    // Apply options
-    if (options.ignoreCase) {
-      processedText1 = text1.toLowerCase();
-      processedText2 = text2.toLowerCase();
+  preprocessText(text: string, options: DiffOptions): string {
+    let result = text;
+    if (options.diffMode === 'smart' || options.normalizeInput) {
+      result = result.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      result = result.split('\n').map(l => l.replace(/[ \t]+/g, ' ').trimEnd()).join('\n');
+      result = result.normalize('NFC');
+      result = result.replace(/[""]/g, '"').replace(/['']/g, "'");
     }
-
     if (options.ignoreWhitespace) {
-      processedText1 = this.normalizeWhitespace(processedText1);
-      processedText2 = this.normalizeWhitespace(processedText2);
+      result = result.replace(/\s+/g, ' ').trim();
     }
+    if (options.ignoreCase) {
+      result = result.toLowerCase();
+    }
+    if (options.ignorePunctuation) {
+      result = result.replace(/[^\w\s\n]/g, '');
+    }
+    return result;
+  }
 
-    // Compute diff
-    const diffs = this.dmp.diff_main(processedText1, processedText2);
+  /**
+   * Word-level diff using the word-to-char encoding trick.
+   * Line → Word is the primary diff strategy; Character is used only as fallback
+   * within the word diff when DMP's semantic cleanup merges adjacent tokens.
+   */
+  computeWordDiff(text1: string, text2: string): DiffResult[] {
+    const words1 = this.tokenizeWords(text1);
+    const words2 = this.tokenizeWords(text2);
 
-    // Semantic cleanup for more human-readable diffs
+    if (!words1.length && !words2.length) return [];
+
+    const wordToChar = new Map<string, string>();
+    let charCode = 0xe000;
+
+    const encode = (words: string[]) =>
+      words.map(w => {
+        if (!wordToChar.has(w)) wordToChar.set(w, String.fromCodePoint(charCode++));
+        return wordToChar.get(w)!;
+      }).join('');
+
+    const e1 = encode(words1);
+    const e2 = encode(words2);
+    const charToWord = new Map([...wordToChar].map(([w, c]) => [c, w]));
+
+    const diffs = this.dmp.diff_main(e1, e2, false);
     this.dmp.diff_cleanupSemantic(diffs);
 
-    // Convert to our format
-    return diffs.map(([operation, text]: [number, string]) => ({
-      type: operation === 1 ? 'insert' : operation === -1 ? 'delete' : 'equal',
-      text: options.ignoreCase ? this.getOriginalCase(text, text1, text2) : text
+    return diffs.map(([op, chars]: [number, string]) => ({
+      type: op === 1 ? 'insert' : op === -1 ? 'delete' : ('equal' as const),
+      text: [...chars].map(c => charToWord.get(c) ?? c).join('')
+    }));
+  }
+
+  classifyChange(oldText: string, newText: string): DiffChangeCategory {
+    const t1 = oldText.trim();
+    const t2 = newText.trim();
+    if (t1 === t2) return 'whitespace';
+    if (t1.toLowerCase() === t2.toLowerCase()) return 'case';
+    const strip = (s: string) => s.replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
+    if (strip(t1).toLowerCase() === strip(t2).toLowerCase()) return 'punctuation';
+    const w1 = t1.split(/\s+/).length;
+    const w2 = t2.split(/\s+/).length;
+    if (Math.abs(w1 - w2) > Math.max(w1, w2) * 0.5) return 'structural';
+    return 'word-replacement';
+  }
+
+  computeCharDiff(text1: string, text2: string, options: DiffOptions = {}): DiffResult[] {
+    const t1 = this.preprocessText(text1, options);
+    const t2 = this.preprocessText(text2, options);
+    const diffs = this.dmp.diff_main(t1, t2);
+    this.dmp.diff_cleanupSemantic(diffs);
+    return diffs.map(([op, text]: [number, string]) => ({
+      type: op === 1 ? 'insert' : op === -1 ? 'delete' : ('equal' as const),
+      text
     }));
   }
 
   /**
-   * Compute line-by-line diff between two texts
-   * @param text1 Original text
-   * @param text2 Modified text
-   * @param options Diff options
-   * @returns Array of line diffs
+   * Hierarchical diff: Line → Word.
+   * Consecutive delete+insert pairs are merged into 'modified' with word-level diffs.
    */
   computeLineDiff(text1: string, text2: string, options: DiffOptions = {}): LineDiff[] {
-    const lines1 = text1.split('\n');
-    const lines2 = text2.split('\n');
+    const t1 = this.preprocessText(text1, options);
+    const t2 = this.preprocessText(text2, options);
 
-    // Compute line-based diff
-    const lineMode = true;
-    const diffs = this.dmp.diff_main(text1, text2, lineMode);
+    const diffs = this.dmp.diff_main(t1, t2, true);
     this.dmp.diff_cleanupSemantic(diffs);
 
-    const result: LineDiff[] = [];
-    let line1Index = 0;
-    let line2Index = 0;
+    const raw: LineDiff[] = [];
     let currentLine = 0;
 
-    for (const [operation, text] of diffs as Array<[number, string]>) {
-      const lines = text.split('\n').filter((line, index, arr) => {
-        // Keep empty lines except the last one if text ends with newline
-        return line !== '' || index !== arr.length - 1;
-      });
+    for (const [op, text] of diffs as [number, string][]) {
+      const lines = text.split('\n');
+      if (lines[lines.length - 1] === '') lines.pop();
 
-      if (operation === 0) { // EQUAL
-        lines.forEach((line) => {
-          currentLine++;
-          result.push({
-            lineNumber: currentLine,
-            type: 'equal',
-            oldText: line,
-            newText: line
-          });
-          line1Index++;
-          line2Index++;
-        });
-      } else if (operation === -1) { // DELETE
-        lines.forEach((line) => {
-          currentLine++;
-          result.push({
-            lineNumber: currentLine,
-            type: 'delete',
-            oldText: line
-          });
-          line1Index++;
-        });
-      } else if (operation === 1) { // INSERT
-        lines.forEach((line) => {
-          currentLine++;
-          result.push({
-            lineNumber: currentLine,
-            type: 'insert',
-            newText: line
-          });
-          line2Index++;
-        });
+      for (const line of lines) {
+        currentLine++;
+        if (op === 0) {
+          raw.push({ lineNumber: currentLine, type: 'equal', oldText: line, newText: line });
+        } else if (op === -1) {
+          raw.push({ lineNumber: currentLine, type: 'delete', oldText: line });
+        } else {
+          raw.push({ lineNumber: currentLine, type: 'insert', newText: line });
+        }
       }
     }
 
-    // Enhance with word-level diffs for modified lines
-    return this.enhanceWithWordDiffs(result, options);
+    return this.pairModifiedLines(raw);
   }
 
-  /**
-   * Compute side-by-side diff for better visualization
-   * @param text1 Original text
-   * @param text2 Modified text
-   * @param options Diff options
-   * @returns Array of side-by-side line diffs
-   */
-  computeSideBySideDiff(text1: string, text2: string, options: DiffOptions = {}): Array<{
-    lineNumber: number;
-    left?: { text: string; type: 'equal' | 'delete' | 'modified' };
-    right?: { text: string; type: 'equal' | 'insert' | 'modified' };
-    wordDiffs?: { left: DiffResult[]; right: DiffResult[] };
-  }> {
+  computeSideBySideDiff(text1: string, text2: string, options: DiffOptions = {}): any[] {
     const lineDiffs = this.computeLineDiff(text1, text2, options);
-    const result: Array<any> = [];
+    const result: any[] = [];
 
-    let i = 0;
-    while (i < lineDiffs.length) {
-      const diff = lineDiffs[i];
-
+    for (const diff of lineDiffs) {
       if (diff.type === 'equal') {
         result.push({
           lineNumber: diff.lineNumber,
           left: { text: diff.oldText!, type: 'equal' },
           right: { text: diff.newText!, type: 'equal' }
         });
-        i++;
-      } else if (diff.type === 'delete') {
-        // Check if next is insert (modification)
-        if (i + 1 < lineDiffs.length && lineDiffs[i + 1].type === 'insert') {
-          const nextDiff = lineDiffs[i + 1];
-          const wordDiffs = this.computeCharDiff(diff.oldText!, nextDiff.newText!, options);
-
-          result.push({
-            lineNumber: diff.lineNumber,
-            left: { text: diff.oldText!, type: 'modified' },
-            right: { text: nextDiff.newText!, type: 'modified' },
-            wordDiffs: this.splitWordDiffs(wordDiffs)
-          });
-          i += 2;
-        } else {
-          result.push({
-            lineNumber: diff.lineNumber,
-            left: { text: diff.oldText!, type: 'delete' }
-          });
-          i++;
-        }
-      } else if (diff.type === 'insert') {
+      } else if (diff.type === 'modified') {
         result.push({
           lineNumber: diff.lineNumber,
-          right: { text: diff.newText!, type: 'insert' }
+          left: { text: diff.oldText!, type: 'modified' },
+          right: { text: diff.newText!, type: 'modified' },
+          wordDiffs: { left: diff.oldWordDiffs!, right: diff.newWordDiffs! },
+          changeCategory: diff.changeCategory
         });
+      } else if (diff.type === 'delete') {
+        result.push({ lineNumber: diff.lineNumber, left: { text: diff.oldText!, type: 'delete' } });
+      } else {
+        result.push({ lineNumber: diff.lineNumber, right: { text: diff.newText!, type: 'insert' } });
+      }
+    }
+
+    return result;
+  }
+
+  getDiffStats(diffs: DiffResult[]) {
+    let additions = 0, deletions = 0, unchanged = 0;
+    for (const { type, text } of diffs) {
+      if (type === 'insert') additions += text.length;
+      else if (type === 'delete') deletions += text.length;
+      else unchanged += text.length;
+    }
+    return { additions, deletions, unchanged, totalChanges: additions + deletions };
+  }
+
+  createPatch(text1: string, text2: string): string {
+    const diffs = this.dmp.diff_main(text1, text2);
+    this.dmp.diff_cleanupSemantic(diffs);
+    return this.dmp.patch_toText(this.dmp.patch_make(text1, diffs));
+  }
+
+  applyPatch(text: string, patchText: string): { text: string; success: boolean } {
+    const [patchedText, results] = this.dmp.patch_apply(this.dmp.patch_fromText(patchText), text);
+    return { text: patchedText, success: results.every((r: boolean) => r) };
+  }
+
+  private tokenizeWords(text: string): string[] {
+    return text.match(/\S+|\s+/g) ?? [];
+  }
+
+  private pairModifiedLines(raw: LineDiff[]): LineDiff[] {
+    const result: LineDiff[] = [];
+    let i = 0;
+
+    while (i < raw.length) {
+      const cur = raw[i];
+      if (cur.type === 'delete' && i + 1 < raw.length && raw[i + 1].type === 'insert') {
+        const next = raw[i + 1];
+        const wordDiffs = this.computeWordDiff(cur.oldText!, next.newText!);
+        const { left, right } = this.splitWordDiffs(wordDiffs);
+        result.push({
+          lineNumber: cur.lineNumber,
+          type: 'modified',
+          oldText: cur.oldText,
+          newText: next.newText,
+          wordDiffs,
+          oldWordDiffs: left,
+          newWordDiffs: right,
+          changeCategory: this.classifyChange(cur.oldText!, next.newText!)
+        });
+        i += 2;
+      } else {
+        result.push(cur);
         i++;
       }
     }
@@ -194,138 +235,14 @@ export class DiffService {
     return result;
   }
 
-  /**
-   * Get diff statistics
-   * @param diffs Array of diff results
-   * @returns Statistics object
-   */
-  getDiffStats(diffs: DiffResult[]): {
-    additions: number;
-    deletions: number;
-    unchanged: number;
-    totalChanges: number;
-  } {
-    let additions = 0;
-    let deletions = 0;
-    let unchanged = 0;
-
-    diffs.forEach(diff => {
-      const length = diff.text.length;
-      if (diff.type === 'insert') {
-        additions += length;
-      } else if (diff.type === 'delete') {
-        deletions += length;
-      } else {
-        unchanged += length;
-      }
-    });
-
-    return {
-      additions,
-      deletions,
-      unchanged,
-      totalChanges: additions + deletions
-    };
-  }
-
-  /**
-   * Create a patch string from diff
-   * @param text1 Original text
-   * @param text2 Modified text
-   * @returns Patch string
-   */
-  createPatch(text1: string, text2: string): string {
-    const diffs = this.dmp.diff_main(text1, text2);
-    this.dmp.diff_cleanupSemantic(diffs);
-    const patches = this.dmp.patch_make(text1, diffs);
-    return this.dmp.patch_toText(patches);
-  }
-
-  /**
-   * Apply patch to text
-   * @param text Original text
-   * @param patchText Patch string
-   * @returns Patched text and success status
-   */
-  applyPatch(text: string, patchText: string): { text: string; success: boolean } {
-    const patches = this.dmp.patch_fromText(patchText);
-    const [patchedText, results] = this.dmp.patch_apply(patches, text);
-    const success = results.every((result: boolean) => result);
-    return { text: patchedText, success };
-  }
-
-  /**
-   * Normalize whitespace by replacing multiple spaces/tabs with single space
-   * @param text Input text
-   * @returns Normalized text
-   */
-  private normalizeWhitespace(text: string): string {
-    return text.replace(/\s+/g, ' ').trim();
-  }
-
-  /**
-   * Get original case for text when ignoreCase is true
-   * @param text Lowercase text
-   * @param original1 Original text 1
-   * @param original2 Original text 2
-   * @returns Text with original casing
-   */
-  private getOriginalCase(text: string, original1: string, original2: string): string {
-    // Try to find the text in original sources
-    const index1 = original1.toLowerCase().indexOf(text.toLowerCase());
-    if (index1 !== -1) {
-      return original1.substring(index1, index1 + text.length);
-    }
-
-    const index2 = original2.toLowerCase().indexOf(text.toLowerCase());
-    if (index2 !== -1) {
-      return original2.substring(index2, index2 + text.length);
-    }
-
-    return text;
-  }
-
-  /**
-   * Enhance line diffs with word-level differences
-   * @param lineDiffs Array of line diffs
-   * @param options Diff options
-   * @returns Enhanced line diffs
-   */
-  private enhanceWithWordDiffs(lineDiffs: LineDiff[], options: DiffOptions): LineDiff[] {
-    return lineDiffs.map(lineDiff => {
-      // Only add word diffs for lines that exist in both versions
-      if (lineDiff.oldText && lineDiff.newText && lineDiff.oldText !== lineDiff.newText) {
-        const wordDiffs = this.computeCharDiff(lineDiff.oldText, lineDiff.newText, options);
-        return {
-          ...lineDiff,
-          type: 'modified',
-          wordDiffs
-        };
-      }
-      return lineDiff;
-    });
-  }
-
-  /**
-   * Split word diffs into left and right sides
-   * @param wordDiffs Array of word diffs
-   * @returns Split diffs for left and right
-   */
   private splitWordDiffs(wordDiffs: DiffResult[]): { left: DiffResult[]; right: DiffResult[] } {
     const left: DiffResult[] = [];
     const right: DiffResult[] = [];
-
-    wordDiffs.forEach(diff => {
-      if (diff.type === 'delete') {
-        left.push(diff);
-      } else if (diff.type === 'insert') {
-        right.push(diff);
-      } else {
-        left.push(diff);
-        right.push(diff);
-      }
-    });
-
+    for (const diff of wordDiffs) {
+      if (diff.type === 'delete') left.push(diff);
+      else if (diff.type === 'insert') right.push(diff);
+      else { left.push(diff); right.push(diff); }
+    }
     return { left, right };
   }
 }

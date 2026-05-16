@@ -75,6 +75,27 @@
   flex-wrap: wrap;
 }
 
+.options-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #666;
+  display: block;
+  margin-bottom: 0.4rem;
+}
+
+.diff-mode-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.mode-toggle {
+  mat-icon {
+    margin-right: 4px;
+  }
+}
+
 .options-toggles {
   display: flex;
   gap: 2rem;
@@ -185,8 +206,8 @@
 
 .diff-line {
   display: flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
+  align-items: baseline;
+  padding: 0.2rem 0.5rem;
   min-height: 1.6em;
   border-left: 3px solid transparent;
 
@@ -195,14 +216,24 @@
     flex-shrink: 0;
     color: #999;
     text-align: right;
-    padding-right: 1rem;
+    padding-right: 0.75rem;
+    user-select: none;
+    font-size: 11px;
+  }
+
+  .line-prefix {
+    width: 16px;
+    flex-shrink: 0;
+    font-weight: 700;
+    color: #999;
+    padding-right: 0.5rem;
     user-select: none;
   }
 
   .line-content {
     flex: 1;
     white-space: pre-wrap;
-    word-break: break-all;
+    word-break: break-word;
   }
 
   .line-indicator {
@@ -219,6 +250,36 @@
       height: 16px;
     }
   }
+}
+
+// Word-level highlights within lines (stronger than line background)
+.word-delete {
+  background-color: #ffa8a8;
+  border-radius: 2px;
+}
+
+.word-insert {
+  background-color: #7fdd9a;
+  border-radius: 2px;
+}
+
+// Change category badges
+.change-badge {
+  flex-shrink: 0;
+  margin-left: 0.75rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  user-select: none;
+
+  &--whitespace  { background: #e0e0e0; color: #555; }
+  &--case        { background: #e3f2fd; color: #1565c0; }
+  &--punctuation { background: #f3e5f5; color: #6a1b9a; }
+  &--word-replacement { background: #fff3e0; color: #e65100; }
+  &--structural  { background: #fce4ec; color: #880e4f; }
 }
 
 .diff-equal {
@@ -374,6 +435,24 @@
   }
 }
 
+.hint-delete {
+  background-color: #ffebe9;
+  color: #cf222e;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 0.875em;
+}
+
+.hint-insert {
+  background-color: #e6ffed;
+  color: #2ea043;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 0.875em;
+}
+
 // Dark mode styles
 @media (prefers-color-scheme: dark) {
   .feature-header {
@@ -408,6 +487,14 @@
   .diff-modified {
     background-color: #3a3a1a;
     border-left-color: #fdd835;
+  }
+
+  .word-delete {
+    background-color: #7a2020;
+  }
+
+  .word-insert {
+    background-color: #1a5c2a;
   }
 
   .split-diff-header {

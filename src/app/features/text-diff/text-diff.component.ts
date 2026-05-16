@@ -11,7 +11,7 @@ import { MatCardModule } from '@angular/material/card';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatButtonToggleModule } from '@angular/material/button-toggle';
-import { DiffService, DiffResult, LineDiff } from '../../core/services/diff.service';
+import { DiffService, DiffResult, LineDiff, DiffMode } from '../../core/services/diff.service';
 
 type ViewMode = 'unified' | 'split';
 
@@ -47,6 +47,8 @@ export class TextDiffComponent implements OnInit {
   // Options
   ignoreWhitespace = signal(false);
   ignoreCase = signal(false);
+  ignorePunctuation = signal(false);
+  diffMode = signal<DiffMode>('smart');
   viewMode = signal<ViewMode>('unified');
 
   // Diff results
@@ -97,7 +99,9 @@ export class TextDiffComponent implements OnInit {
     try {
       const options = {
         ignoreWhitespace: this.ignoreWhitespace(),
-        ignoreCase: this.ignoreCase()
+        ignoreCase: this.ignoreCase(),
+        ignorePunctuation: this.ignorePunctuation(),
+        diffMode: this.diffMode()
       };
 
       // Compute character-level diff
@@ -253,19 +257,23 @@ console.log('Total with tax:', total.toFixed(2));`);
     }).join('');
   }
 
-  /**
-   * Get CSS class for diff type
-   */
   getDiffClass(type: string): string {
     switch (type) {
-      case 'insert':
-        return 'diff-insert';
-      case 'delete':
-        return 'diff-delete';
-      case 'modified':
-        return 'diff-modified';
-      default:
-        return 'diff-equal';
+      case 'insert': return 'diff-insert';
+      case 'delete': return 'diff-delete';
+      case 'modified': return 'diff-modified';
+      default: return 'diff-equal';
+    }
+  }
+
+  getCategoryLabel(category: string | undefined): string {
+    switch (category) {
+      case 'whitespace': return 'Whitespace';
+      case 'case': return 'Case';
+      case 'punctuation': return 'Punctuation';
+      case 'structural': return 'Structural';
+      case 'word-replacement': return 'Word';
+      default: return '';
     }
   }
 }

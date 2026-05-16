@@ -58,6 +58,23 @@
   <mat-card class="options-card">
     <mat-card-content>
       <div class="options-row">
+
+        <!-- Diff Mode -->
+        <div class="diff-mode-section">
+          <span class="options-label">Diff Mode</span>
+          <mat-button-toggle-group [(ngModel)]="diffMode" name="diffMode" class="mode-toggle">
+            <mat-button-toggle value="smart" matTooltip="Normalize whitespace, Unicode, quotes before diffing">
+              <mat-icon>auto_awesome</mat-icon>
+              Smart
+            </mat-button-toggle>
+            <mat-button-toggle value="strict" matTooltip="Exact character-by-character comparison">
+              <mat-icon>code</mat-icon>
+              Strict
+            </mat-button-toggle>
+          </mat-button-toggle-group>
+        </div>
+
+        <!-- Fine-grained toggles -->
         <div class="options-toggles">
           <mat-slide-toggle [(ngModel)]="ignoreWhitespace" color="primary">
             Ignore Whitespace
@@ -65,8 +82,12 @@
           <mat-slide-toggle [(ngModel)]="ignoreCase" color="primary">
             Ignore Case
           </mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="ignorePunctuation" color="primary">
+            Ignore Punctuation
+          </mat-slide-toggle>
         </div>
 
+        <!-- View mode -->
         <div class="view-mode-toggle">
           <mat-button-toggle-group [(ngModel)]="viewMode" name="viewMode">
             <mat-button-toggle value="unified">
@@ -146,27 +167,49 @@
           @if (viewMode() === 'unified') {
             <div class="unified-diff">
               @for (lineDiff of lineDiffs(); track $index) {
-                <div class="diff-line" [ngClass]="getDiffClass(lineDiff.type)">
-                  <span class="line-number">{{ lineDiff.lineNumber }}</span>
-                  <span class="line-content">
-                    @if (lineDiff.wordDiffs && lineDiff.wordDiffs.length > 0) {
-                      @for (wordDiff of lineDiff.wordDiffs; track $index) {
-                        <span [ngClass]="getDiffClass(wordDiff.type)">{{ wordDiff.text }}</span>
+
+                @if (lineDiff.type === 'modified') {
+                  <!-- Delete row for modified line -->
+                  <div class="diff-line diff-delete">
+                    <span class="line-number">{{ lineDiff.lineNumber }}</span>
+                    <span class="line-prefix">-</span>
+                    <span class="line-content">
+                      @for (wd of (lineDiff.oldWordDiffs || []); track $index) {
+                        <span [class.word-delete]="wd.type === 'delete'">{{ wd.text }}</span>
                       }
-                    } @else {
-                      <span>{{ lineDiff.oldText || lineDiff.newText }}</span>
+                    </span>
+                    @if (lineDiff.changeCategory) {
+                      <span class="change-badge change-badge--{{ lineDiff.changeCategory }}">
+                        {{ getCategoryLabel(lineDiff.changeCategory) }}
+                      </span>
                     }
-                  </span>
-                  <span class="line-indicator">
-                    @if (lineDiff.type === 'insert') {
-                      <mat-icon>add</mat-icon>
-                    } @else if (lineDiff.type === 'delete') {
-                      <mat-icon>remove</mat-icon>
-                    } @else if (lineDiff.type === 'modified') {
-                      <mat-icon>edit</mat-icon>
-                    }
-                  </span>
-                </div>
+                  </div>
+                  <!-- Insert row for modified line -->
+                  <div class="diff-line diff-insert">
+                    <span class="line-number">{{ lineDiff.lineNumber }}</span>
+                    <span class="line-prefix">+</span>
+                    <span class="line-content">
+                      @for (wd of (lineDiff.newWordDiffs || []); track $index) {
+                        <span [class.word-insert]="wd.type === 'insert'">{{ wd.text }}</span>
+                      }
+                    </span>
+                  </div>
+
+                } @else {
+                  <div class="diff-line" [ngClass]="getDiffClass(lineDiff.type)">
+                    <span class="line-number">{{ lineDiff.lineNumber }}</span>
+                    <span class="line-prefix">{{ lineDiff.type === 'insert' ? '+' : lineDiff.type === 'delete' ? '-' : ' ' }}</span>
+                    <span class="line-content">{{ lineDiff.oldText || lineDiff.newText }}</span>
+                    <span class="line-indicator">
+                      @if (lineDiff.type === 'insert') {
+                        <mat-icon>add</mat-icon>
+                      } @else if (lineDiff.type === 'delete') {
+                        <mat-icon>remove</mat-icon>
+                      }
+                    </span>
+                  </div>
+                }
+
               }
             </div>
           }
@@ -186,7 +229,7 @@
                       <span class="line-content">
                         @if (diff.wordDiffs?.left) {
                           @for (wordDiff of diff.wordDiffs.left; track $index) {
-                            <span [ngClass]="getDiffClass(wordDiff.type)">{{ wordDiff.text }}</span>
+                            <span [class.word-delete]="wordDiff.type === 'delete'">{{ wordDiff.text }}</span>
                           }
                         } @else {
                           {{ diff.left.text }}
@@ -200,12 +243,17 @@
                       <span class="line-content">
                         @if (diff.wordDiffs?.right) {
                           @for (wordDiff of diff.wordDiffs.right; track $index) {
-                            <span [ngClass]="getDiffClass(wordDiff.type)">{{ wordDiff.text }}</span>
+                            <span [class.word-insert]="wordDiff.type === 'insert'">{{ wordDiff.text }}</span>
                           }
                         } @else {
                           {{ diff.right.text }}
                         }
                       </span>
+                      @if (diff.changeCategory) {
+                        <span class="change-badge change-badge--{{ diff.changeCategory }}">
+                          {{ getCategoryLabel(diff.changeCategory) }}
+                        </span>
+                      }
                     }
                   </div>
                 </div>
@@ -223,9 +271,14 @@
     <ol>
       <li>Enter or paste your original text in the left field</li>
       <li>Enter or paste your modified text in the right field</li>
-      <li>Optionally toggle "Ignore Whitespace" or "Ignore Case"</li>
-      <li>Click "Compare" to see line-by-line and word-level differences</li>
-      <li>Switch between Unified and Split views for different perspectives</li>
+      <li>
+        Choose a <strong>Diff Mode</strong>:
+        <strong>Smart</strong> normalizes whitespace, Unicode, and quotes before diffing (great for docs &amp; AI text);
+        <strong>Strict</strong> does an exact comparison.
+        Fine-tune with Ignore Whitespace / Case / Punctuation toggles.
+      </li>
+      <li>Click <strong>Compare</strong> — changed lines show as a <span class="hint-delete">- old</span> / <span class="hint-insert">+ new</span> pair with word-level highlights</li>
+      <li>Switch between <strong>Unified</strong> and <strong>Split</strong> views for different perspectives</li>
     </ol>
     <p class="privacy-note">
       <mat-icon>lock</mat-icon>
