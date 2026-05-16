@@ -56,7 +56,10 @@ export class DiffService {
       result = result.toLowerCase();
     }
     if (options.ignorePunctuation) {
-      result = result.replace(/[^\w\s\n]/g, '');
+      // \p{L} = all Unicode letters (includes Vietnamese á à ơ ư ă etc.)
+      // \p{N} = all Unicode numbers
+      // keeps letters, numbers, whitespace; strips only punctuation/symbols
+      result = result.replace(/[^\p{L}\p{N}\s]/gu, '');
     }
     return result;
   }
@@ -99,7 +102,7 @@ export class DiffService {
     const t2 = newText.trim();
     if (t1 === t2) return 'whitespace';
     if (t1.toLowerCase() === t2.toLowerCase()) return 'case';
-    const strip = (s: string) => s.replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
+    const strip = (s: string) => s.replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
     if (strip(t1).toLowerCase() === strip(t2).toLowerCase()) return 'punctuation';
     const w1 = t1.split(/\s+/).length;
     const w2 = t2.split(/\s+/).length;
